@@ -3,8 +3,7 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
-from staywell.listings import get_listing
-from staywell.services.pricing import QuoteCalculator
+from staywell.adapters import quote_client
 
 HOST_SHARE = Decimal("0.97")
 CENT = Decimal("0.01")
@@ -15,7 +14,9 @@ class HostPayout:
         self.request = request
 
     def compute(self):
-        calculator = QuoteCalculator(get_listing(self.request.listing_id), self.request)
-        quote = calculator.call()
-        base = calculator._lodging_total + quote["cleaning_fee"]
+        quote = quote_client.fetch_quote(self.request)
+        # Partner lodging already includes the 12% commission gross-up, so
+        # partner hosts are paid on it. Preserved pending a human decision; see
+        # docs/quirks.md section 9.2.
+        base = quote["lodging"] + quote["cleaning_fee"]
         return (base * HOST_SHARE).quantize(CENT, rounding=ROUND_HALF_UP)

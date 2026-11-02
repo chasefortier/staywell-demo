@@ -1,7 +1,8 @@
 """Characterization of host payouts and confirmation emails over every frozen request.
 
 The production callers are compared with the frozen original behavior in
-``tests/original_callers.py``. The structured formulas below are what the
+``tests/original_callers.py``. These comparisons passed against the original
+in-process callers before the migration. The structured formulas below are what the
 callers compute from a structured quote, and are checked against the original
 private-state and summary-parsing behavior for all 129 requests.
 """
@@ -18,6 +19,7 @@ from tests.original_callers import (
     original_host_payout,
     original_summary_matches,
 )
+from tests.quote_doubles import offline_quote_service
 
 CASES = load_cases()
 CASES_BY_ID = {case["id"]: case for case in CASES}
@@ -36,6 +38,14 @@ def structured_email(guest_name, expected):
 
 
 class CallerCharacterizationTests(unittest.TestCase):
+    # Offline, the production callers reach the legacy engine through the real
+    # adapter and a test transport. tests/contract repeats every comparison
+    # against the running service.
+    def setUp(self):
+        context = offline_quote_service()
+        context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+
     def test_every_frozen_request_is_characterized(self):
         self.assertEqual(len(CASES), 129)
         self.assertEqual(len(CASES_BY_ID), 129)
