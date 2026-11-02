@@ -5,9 +5,9 @@ This is the inventory of every pricing rule the standalone `quote_service` copie
 Conventions:
 
 - **Source** cites the original legacy code at baseline `7afa2d2`. That code remains the reference implementation.
-- **Golden cases** lists IDs from the frozen 129-case golden master whose requests exercise the rule. "None" means no frozen case reaches the branch. Those branches are covered only by the focused tests in `tests/service/test_engine_rules.py`, which use test-local listings and requests.
+- **Golden cases** lists IDs from the frozen 129-case golden master whose requests exercise the rule. "None" means no frozen case reaches the branch. Those branches are covered only by the focused tests in `tests/service/test_engine_rules.py`, which use test-local listings and requests, and by the real-HTTP tests in `tests/contract/test_http_quote_requests.py`.
 - **Intent** is one of: *intentional* (a deliberate business rule), *suspicious* (looks like a bug, preserved anyway), or *unresolved* (the intent cannot be determined from the code).
-- The service copy lives in `quote_service/pricing.py`, `quote_service/jurisdictions.py`, `quote_service/catalog.py` and `quote_service/promos.py`. All 129 frozen cases are compared directly against the service engine in `tests/service/test_engine_golden.py`.
+- The service copy lives in `quote_service/pricing.py`, `quote_service/jurisdictions.py`, `quote_service/catalog.py` and `quote_service/promos.py`. All 129 frozen cases are compared directly against the service engine in `tests/service/test_engine_golden.py`, and replayed over real HTTP against the running service in `tests/contract/test_http_golden_quotes.py`.
 
 ## 1. Nightly rates
 
@@ -73,7 +73,7 @@ Conventions:
 
 - **Source:** `staywell/services/pricing.py:60`, `staywell/promos.py:9-14`
 - **Behavior and order:** `PROMOS.get(code) if code else None`. `None` and the empty string mean no promo. Unknown codes and codes with different case or surrounding whitespace (for example `summer10` or `"SUMMER10 "`) are ignored without an error and price exactly like a request without a promo. Promos have no date, listing, channel or minimum-stay restrictions. The four codes are SUMMER10 (10%), FALL15 (15%), WELCOME25 ($25 fixed) and VIP12PLUS (12% plus $40).
-- **Golden cases:** Each valid code appears (SUMMER10 in gm-007, FALL15 in gm-008, VIP12PLUS in gm-009, WELCOME25 in gm-010, among others). Unknown, empty and differently-cased codes: none. Covered by `test_unknown_empty_or_differently_cased_promo_is_ignored`.
+- **Golden cases:** Each valid code appears (SUMMER10 in gm-007, FALL15 in gm-008, VIP12PLUS in gm-009, WELCOME25 in gm-010, among others). Unknown, empty and differently-cased codes: none. Covered by `test_unknown_empty_or_differently_cased_promo_is_ignored` and, over HTTP, by 8.5.
 - **Intent:** Unresolved. Silently ignoring a mistyped code may surprise guests, but it is current behavior.
 
 ## 3. Fees
@@ -96,7 +96,7 @@ Conventions:
 
 - **Source:** `staywell/services/pricing.py:72` (`max_guests` from `staywell/listings.py:13-118` is never read)
 - **Behavior and order:** Requests above a listing's capacity are priced normally, with the extra-guest cap applying.
-- **Golden cases:** None. Covered by `test_guest_count_is_not_limited_by_max_guests`.
+- **Golden cases:** None. Covered by `test_guest_count_is_not_limited_by_max_guests` and, over HTTP, by 8.4.
 - **Intent:** Unresolved. The service does not add a capacity limit.
 
 ### 3.4 Extra-guest fees are outside the service-fee base and are not grossed up for partners
@@ -190,3 +190,49 @@ Conventions:
 - **Behavior and order:** Host payout is 97% of `QuoteCalculator._lodging_total` plus cleaning, rounded half-up to cents. For partner bookings `_lodging_total` already includes the 12% commission gross-up from 4.1, so a partner host earns more than a web host for the same stay: $582.19 versus $528.65 on the sample stay, a $53.54 gap.
 - **Golden cases:** The sample stay is the request in gm-001 (web) and gm-002 (partner). Payouts are not frozen fields, so no case checks them directly.
 - **Intent:** Suspicious (likely a bug that overpays partner hosts). Preserved unchanged. A human decides whether to fix it as its own change.
+
+## 8. HTTP boundary (`POST /v1/quotes`)
+
+These are service-only behaviors with no legacy source line, because the legacy engine is called in-process with a `QuoteRequest` dataclass. They are listed here so the `/v1` contract partners pin to is documented next to the pricing rules it fronts. They are enforced in `quote_service/api.py` and tested over real HTTP in `tests/contract/test_http_quote_requests.py`.
+
+### 8.1 Request validation
+
+- **Source:** None in the legacy code (`staywell/models.py:31-37` declares the fields without validation).
+- **Behavior and order:** `listing_id` must be a JSON string. `check_in` must be a string in exactly `YYYY-MM-DD` form and a real calendar date. `nights` and `guests` must be JSON integers greater than zero; booleans, numeric strings and floats (including `2.0`) are rejected. `promo_code` is a string or `null`. `channel` is `"web"` or `"partner"`. Any violation, a missing required field, a non-object body or malformed JSON returns 422. Validation runs before pricing.
+- **Golden cases:** None (every frozen request is valid). Covered by `test_invalid_input_is_rejected_with_422` and `test_malformed_json_is_rejected_with_422`.
+- **Intent:** Intentional (approved input policy for the partner API).
+
+### 8.2 Defaults
+
+- **Source:** `staywell/models.py:36-37`
+- **Behavior and order:** Omitted `promo_code` means `null` and omitted `channel` means `"web"`, matching the legacy dataclass defaults. The four omitted/explicit combinations return identical quotes.
+- **Golden cases:** gm-001 is the reference quote. Every frozen request sends both fields explicitly, so omission itself is not frozen. Covered by `test_channel_and_promo_defaults_equal_explicit_web_and_null`.
+- **Intent:** Intentional.
+
+### 8.3 Unknown listing returns 404
+
+- **Source:** `staywell/listings.py:123-131`
+- **Behavior and order:** A well-formed request for a listing that is not in the catalog returns 404 with a `detail` message. Listing IDs are matched exactly, so `SF-LOFT` and the empty string are unknown.
+- **Golden cases:** None. Covered by `test_unknown_listing_returns_404`.
+- **Intent:** Intentional.
+
+### 8.4 No booking restrictions beyond the legacy engine
+
+- **Source:** `staywell/services/pricing.py:41-52`, `staywell/services/pricing.py:72`
+- **Behavior and order:** The service does not reject past check-in dates, guest counts above `max_guests`, or long stays. A 2015 check-in, 9 guests on the 4-guest sf-loft and a 60-night nyc-studio stay all return 200 and match the unchanged legacy engine field for field. Dates beyond the calendar range (for example a stay running past 9999-12-31) are not defined by the contract.
+- **Golden cases:** None for these probes. Covered by `test_no_new_booking_restrictions`.
+- **Intent:** Unresolved for the legacy engine; intentionally preserved by the service.
+
+### 8.5 Promo matching over HTTP
+
+- **Source:** `staywell/services/pricing.py:60`
+- **Behavior and order:** As in 2.5. Over HTTP, `"BOGUS"`, `""`, `"summer10"`, `"Summer10"`, `"SUMMER10 "`, `"vip12plus"` and `"welcome25"` return exactly the no-promo quote, while `"SUMMER10"` changes it.
+- **Golden cases:** None. Covered by `test_unknown_empty_or_differently_cased_promo_equals_no_promo`.
+- **Intent:** Unresolved, as in 2.5.
+
+### 8.6 Requests share no state
+
+- **Source:** `staywell/services/pricing.py:34-38` (a fresh `QuoteCalculator` per call)
+- **Behavior and order:** Each request builds its nightly list and totals from scratch. Repeating gm-001 after gm-002 returns the gm-001 quote unchanged.
+- **Golden cases:** gm-001, gm-002. Covered by `test_requests_do_not_share_calculation_state`.
+- **Intent:** Intentional.

@@ -1,4 +1,5 @@
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -69,3 +70,23 @@ def test_direct_dependencies_are_pinned_exactly():
 
 def test_runtime_is_python_39_or_newer():
     assert sys.version_info >= (3, 9)
+
+def test_pytest_only_directories_stay_out_of_unittest_discovery():
+    for name in ("service", "contract"):
+        assert not (ROOT / "tests" / name / "__init__.py").exists(), name
+    code = (
+        "import sys, unittest\n"
+        "unittest.TestLoader().discover('tests', top_level_dir='.')\n"
+        "bad = [m for m in sys.modules if m.split('.')[0] in %r\n"
+        "       or m.startswith(('tests.service', 'tests.contract'))]\n"
+        "assert not bad, bad\n"
+    ) % (sorted(THIRD_PARTY),)
+    subprocess.run([sys.executable, "-c", code], cwd=str(ROOT), check=True)
+
+
+def test_launcher_is_executable_and_binds_loopback_8080():
+    launcher = ROOT / "scripts" / "serve.sh"
+    assert os.access(str(launcher), os.X_OK)
+    text = launcher.read_text()
+    assert "quote_service.api:app --host 127.0.0.1 --port 8080" in text
+    assert "logs/quote_service.log 2>&1" in text
