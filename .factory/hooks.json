@@ -1,0 +1,14 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "Create|Edit|ApplyPatch|MultiEdit|Execute",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"$FACTORY_PROJECT_DIR\"/.factory/hooks/protect_golden_master.py",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}

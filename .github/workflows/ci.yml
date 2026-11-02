@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  legacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Legacy unit tests
+        run: python -m unittest discover -s tests -t . -v
+      - name: Golden master against the legacy engine
+        run: python scripts/check_golden_master.py
+
+  fixture-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Golden master must not change
+        run: git diff --exit-code "origin/${{ github.base_ref }}" -- tests/fixtures/golden_master.json
+
+  quote-service-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Skip until the service exists
+        id: present
+        run: |
+          if [ -f requirements-service.txt ] && [ -x scripts/serve.sh ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Install
+        if: steps.present.outputs.run == 'true'
+        run: pip install -r requirements-service.txt
+      - name: Start service and replay the golden master over HTTP
+        if: steps.present.outputs.run == 'true'
+        run: |
+          scripts/serve.sh &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/healthz && break; sleep 1; done
+          pytest tests/contract -q
