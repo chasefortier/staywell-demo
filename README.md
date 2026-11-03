@@ -9,7 +9,8 @@ The legacy code uses only the Python standard library (3.9+). The FastAPI servic
 ## Quickstart
 
 ```bash
-python3 -m unittest discover -s tests -t . -v   # 3 thin happy-path tests
+scripts/check                                 # unit tests and all 129 golden master cases
+python3 -m unittest discover -s tests -t . -v   # unit tests, including payout regressions
 python3 scripts/check_golden_master.py          # 129/129 against the legacy engine
 python3 scripts/demo_facts.py                   # the numbers quoted in the demo
 ```
@@ -23,9 +24,9 @@ Produced by `scripts/demo_facts.py`. Rerun it after any change and before you pr
 | Golden master cases | 129 |
 | Cases that change if nightly rounding becomes half-up | **25 of 129** |
 | Sample stay host payout, web | $528.65 |
-| Same stay, partner booking | $582.19 |
-| Partner host overpaid on the sample stay | **$53.54** |
-| Existing unit tests | 3 |
+| Same stay, partner booking | $528.65 |
+| Partner payout gap on the sample stay | **$0.00** |
+| Existing unit tests | 6 |
 
 ## The seven legacy quirks
 
@@ -41,7 +42,7 @@ Numbered comments in `staywell/services/pricing.py` mark each one.
 | 6 | NYC exempts stays of 30+ nights and adds $2 per night; MIA taxes the service fee; AUS doesn't tax cleaning | Edge cases thin tests miss |
 | 7 | Each night is rounded to whole dollars with built-in `round()`, which rounds halves to even | A rewrite trap |
 
-**Latent bug (not commented anywhere):** `HostPayout` computes 97% of `QuoteCalculator._lodging_total` plus cleaning. For partner bookings that lodging figure already includes the 12% commission gross-up, so partner hosts are paid more than web hosts for the same stay. A good Mission flags this in `docs/quirks.md` and does not fix it.
+**Partner payout correction (CHA-5):** The original `HostPayout` used `QuoteCalculator._lodging_total`, including the partner's commission gross-up, and overpaid the sample partner host by $53.54. The partner payout now uses lodging subtotal minus discount, plus cleaning, before applying the 97% host share. Web payouts and all legacy quote rules remain unchanged. See `docs/quirks.md` for the preserved gross-up rule and regression evidence.
 
 ## Layout
 

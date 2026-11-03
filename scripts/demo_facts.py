@@ -71,7 +71,7 @@ def main():
     for name, n in quirk_coverage(cases).items():
         print(f"  {name}: {n}")
     web, partner = payout_gap()
-    print(f"Latent payout bug, sample stay: web host ${web}, partner host ${partner}, gap ${partner - web}")
+    print(f"Sample stay payout: web host ${web}, partner host ${partner}, gap ${partner - web}")
 
 
 if __name__ == "__main__":
