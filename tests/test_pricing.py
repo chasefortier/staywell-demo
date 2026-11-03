@@ -6,6 +6,7 @@ from staywell.models import QuoteRequest
 from staywell.services.booking_confirmation import build_confirmation_email
 from staywell.services.host_payout import HostPayout
 from staywell.services.pricing import get_quote
+from tests.quote_doubles import offline_quote_service
 
 SAMPLE_STAY = QuoteRequest(listing_id="sf-loft", check_in=date(2026, 3, 10), nights=2, guests=2)
 
@@ -15,12 +16,24 @@ class PricingTests(unittest.TestCase):
         quote = get_quote(SAMPLE_STAY)
         self.assertEqual(quote["total"], Decimal("698.69"))
 
+
+class QuoteConsumerTests(unittest.TestCase):
+    """Callers go through the quote adapter; an offline transport stands in for the service."""
+
+    def setUp(self):
+        context = offline_quote_service()
+        self.transport = context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+
     def test_confirmation_email_mentions_total(self):
         email = build_confirmation_email("Avery", SAMPLE_STAY)
         self.assertIn("$698.69", email)
+        self.assertEqual(email, "Hi Avery, your 2-night stay is confirmed. Total charged: $698.69.")
+        self.assertEqual(len(self.transport.calls), 1)
 
     def test_host_payout_for_web_booking(self):
         self.assertEqual(HostPayout(SAMPLE_STAY).compute(), Decimal("528.65"))
+        self.assertEqual(len(self.transport.calls), 1)
 
 
 if __name__ == "__main__":

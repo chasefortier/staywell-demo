@@ -173,7 +173,7 @@ Conventions:
 - **Source:** `staywell/services/pricing.py:104-114`, `scripts/_golden.py:28-48`
 - **Behavior and order:** The legacy quote also has a `summary` string (average nightly lodging, cleaning, service, tax and total with thousands separators). The fixture serializes only the 12 structured fields, with each nightly rate and money value as a two-decimal string and `nights` as an integer. The service has no summary.
 - **Golden cases:** All 129 cases (field shape).
-- **Intent:** Intentional. The summary's consumer is documented with the caller migration.
+- **Intent:** Intentional. The summary's only consumer, the confirmation email, now uses structured fields (see 9.3).
 
 ### 6.3 Unknown listing
 
@@ -189,7 +189,7 @@ Conventions:
 - **Source:** `staywell/services/host_payout.py:17-21`
 - **Behavior and order:** Host payout is 97% of `QuoteCalculator._lodging_total` plus cleaning, rounded half-up to cents. For partner bookings `_lodging_total` already includes the 12% commission gross-up from 4.1, so a partner host earns more than a web host for the same stay: $582.19 versus $528.65 on the sample stay, a $53.54 gap.
 - **Golden cases:** The sample stay is the request in gm-001 (web) and gm-002 (partner). Payouts are not frozen fields, so no case checks them directly.
-- **Intent:** Suspicious (likely a bug that overpays partner hosts). Preserved unchanged. A human decides whether to fix it as its own change.
+- **Intent:** Suspicious (likely a bug that overpays partner hosts). Preserved unchanged. A human decides whether to fix it as its own change. The migrated payout keeps it; see 9.2.
 
 ## 8. HTTP boundary (`POST /v1/quotes`)
 
@@ -235,4 +235,46 @@ These are service-only behaviors with no legacy source line, because the legacy 
 - **Source:** `staywell/services/pricing.py:34-38` (a fresh `QuoteCalculator` per call)
 - **Behavior and order:** Each request builds its nightly list and totals from scratch. Repeating gm-001 after gm-002 returns the gm-001 quote unchanged.
 - **Golden cases:** gm-001, gm-002. Covered by `test_requests_do_not_share_calculation_state`.
+- **Intent:** Intentional.
+
+## 9. Quote consumers (host payout and confirmation email)
+
+`HostPayout` and `build_confirmation_email` no longer run the pricing engine in-process. They call `staywell/adapters/quote_client.py`, which POSTs to `/v1/quotes` over HTTP and returns the 12 structured fields with every money value and nightly rate as a `Decimal`. Their public signatures are unchanged. The source references below point at the original callers at baseline `7afa2d2`, before the migration. Frozen test-only copies of that original code live in `tests/original_callers.py` and are the oracle for parity.
+
+Parity is checked for all 129 frozen requests, for each caller, against the running service in `tests/contract/test_http_callers.py`, with the legacy engine disabled while production code runs. The same comparisons run offline in `tests/test_caller_characterization.py`, where a test transport answers from the legacy engine. They passed against the original in-process callers before the migration.
+
+### 9.1 Host payout is 97% of lodging plus cleaning, rounded half-up to cents
+
+- **Source:** `staywell/services/host_payout.py:9-10`, `staywell/services/host_payout.py:17-21` (original)
+- **Behavior and order:** `((lodging + cleaning_fee) * Decimal("0.97")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)`. Extra-guest fees, the service fee and tax are not part of the base. Cleaning is zero at 28+ nights (3.1), so long-stay payouts are 97% of lodging alone. The original read lodging from the private `QuoteCalculator._lodging_total` after `call()` (line 20). For web quotes that value is not quantized, but it is always a whole-cent amount, so it equals the returned two-decimal `lodging` field. The migrated caller uses the returned `lodging` and `cleaning_fee`.
+- **Golden cases:** All 129 (payout is not a frozen field; it is compared with the original formula per case). Sample: gm-001 pays $528.65 (0.97 x (460.00 + 85.00) = 528.65). Waived cleaning: the 22 cases of 28+ nights, for example gm-012. Extra guests excluded from the base: for example gm-014.
+- **Intent:** Intentional for web bookings. See 9.2 for partner bookings.
+
+### 9.2 Partner hosts are paid on grossed-up lodging (preserved overpayment)
+
+- **Source:** `staywell/services/host_payout.py:20` (original), `staywell/services/pricing.py:76-82`
+- **Behavior and order:** For partner bookings, the lodging the host is paid on already includes the 12% commission gross-up from 4.1. On the sample stay, web lodging is $460.00 and partner lodging is $515.20 (460.00 x 1.12). The web host gets $528.65 and the partner host gets 0.97 x (515.20 + 85.00) = 582.194, rounded to $582.19. That is a $53.54 gap for the same stay. The migrated caller keeps this exactly: it uses the returned `lodging`, and does not rebuild lodging as `lodging_subtotal - discount` (which would be $460.00 and would silently change partner payouts). `scripts/demo_facts.py` still prints `web host $528.65, partner host $582.19, gap $53.54`, now through the quote service.
+- **Golden cases:** gm-001 (web) and gm-002 (partner) for the sample stay. All 33 partner cases are compared with the original payout.
+- **Intent:** Suspicious (likely overpays partner hosts by passing the guest-side commission to them). Preserved unchanged. A human decides whether to fix it as its own change.
+
+### 9.3 Confirmation email text, and the summary coupling it replaced
+
+- **Source:** `staywell/services/booking_confirmation.py:4-19` (original), `staywell/services/pricing.py:107-114`
+- **Behavior and order:** The email is exactly `Hi {guest_name}, your {nights}-night stay is confirmed. Total charged: ${total}.`. The guest name is interpolated as given (no trimming or escaping). One night reads `1-night stay`. The total has two decimals and comma thousands separators, for example `$698.69`, `$1,336.52` (gm-003) and `$10,060.78` (gm-019). The original got `nights` and `total` by regex-matching the legacy quote `summary` string (line 8), where the total was formatted with `{total:,}`. Its separate `1-night stay` branch (line 18) produced the same text as the general format. The migrated caller formats the structured `nights` and `Decimal` `total` with `{total:,.2f}`, which gives the same characters for every two-decimal total. The HTTP response has no summary, and production code no longer parses one.
+- **Generic fallback:** The original returned `Hi {guest_name}, your StayWell booking is confirmed.` when the regex did not match (lines 14-15). The summary always matched: every quote the engine can return has a positive night count and a non-negative two-decimal total, and the regex matched all 129 frozen requests (`test_original_summary_parse_never_falls_back`). The structured caller has no parse step, so this unreachable branch is gone. A quote the service cannot produce now raises an error (9.4) instead of sending an email.
+- **Golden cases:** All 129, with guest names cycled through accents, apostrophes, commas, braces, surrounding spaces and non-Latin script. One night: gm-011, gm-038, gm-050, gm-059, gm-067, gm-070, gm-081, gm-090. Comma-grouped totals: 105 cases of $1,000 or more, including 14 of $10,000 or more (for example gm-019, gm-021, gm-028).
+- **Intent:** Intentional text. The summary parsing was incidental coupling.
+
+### 9.4 Failures reach the caller; there is no local fallback
+
+- **Source:** `staywell/services/host_payout.py:18` and `staywell/services/booking_confirmation.py:12` (original), `staywell/listings.py:123-131`
+- **Behavior and order:** Originally, an unknown listing raised `ListingNotFound` from `get_listing` before any pricing. Now the service returns 404 and the adapter raises the same `ListingNotFound(listing_id)`. Any other HTTP status raises `QuoteServiceHTTPError` (with `status` and `detail`). Connection failures raise `QuoteServiceUnavailable`, and timeouts raise its subclass `QuoteServiceTimeout`. A body that is not a valid quote raises `QuoteServiceResponseError`. All share the base `QuoteServiceError`. Both callers let these propagate, so no payout or email is produced. Nothing retries, and nothing falls back to the legacy engine. Requests outside the `/v1` input policy (8.1) now fail with a 422 `QuoteServiceHTTPError`. The original in-process callers priced some of them anyway, for example zero guests or an unknown channel treated as web. Zero or negative nights failed in the original too (the summary divides by nights).
+- **Golden cases:** None (every frozen request is valid and uses a catalog listing). Covered over real HTTP by `test_real_404_raises_listing_not_found` and `test_real_422_fails_explicitly`, and offline by `tests/test_quote_client.py` and `tests/test_quote_callers.py`.
+- **Intent:** Intentional (approved migration design).
+
+### 9.5 Adapter configuration
+
+- **Source:** None in the legacy code. Lives in `staywell/adapters/quote_client.py`.
+- **Behavior and order:** The base URL is `STAYWELL_QUOTE_SERVICE_URL`, read on every call, defaulting to `http://127.0.0.1:8080`. An empty value uses the default. The timeout defaults to 5 seconds and can be passed as `timeout=` to `fetch_quote` or `QuoteClient`; it must be finite and positive. The adapter uses only the standard library (`urllib.request`, `json`, `decimal`). Money is decoded from its two-decimal string straight to `Decimal`; a money value sent as a JSON number is rejected rather than read through `float`.
+- **Golden cases:** All 129 responses are decoded and compared field by field in `test_adapter_decodes_frozen_quote_over_http`.
 - **Intent:** Intentional.
