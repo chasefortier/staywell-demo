@@ -17,5 +17,10 @@ class HostPayout:
     def compute(self):
         calculator = QuoteCalculator(get_listing(self.request.listing_id), self.request)
         quote = calculator.call()
-        base = calculator._lodging_total + quote["cleaning_fee"]
+        if self.request.channel == "partner":
+            # The guest quote's lodging includes commission, which hosts do not earn.
+            lodging = quote["lodging_subtotal"] - quote["discount"]
+        else:
+            lodging = calculator._lodging_total
+        base = lodging + quote["cleaning_fee"]
         return (base * HOST_SHARE).quantize(CENT, rounding=ROUND_HALF_UP)
